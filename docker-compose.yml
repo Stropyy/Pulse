@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgres:14-alpine
+    container_name: pulse_postgres
+    restart: always
+    command: ["postgres", "-c", "synchronous_commit=off", "-c", "max_connections=250", "-c", "shared_buffers=256MB"]
+    environment:
+      POSTGRES_USER: pulse_user
+      POSTGRES_PASSWORD: pulse_password
+      POSTGRES_DB: pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse_user -d pulse"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    container_name: pulse_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: pulse_api
+    restart: always
+    environment:
+      PULSE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: pulse_user
+      POSTGRES_PASSWORD: pulse_password
+      POSTGRES_DB: pulse
+      DATABASE_URL: postgresql+asyncpg://pulse_user:pulse_password@postgres:5432/pulse
+      SYNC_DATABASE_URL: postgresql+psycopg2://pulse_user:pulse_password@postgres:5432/pulse
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: pulse_worker
+    restart: always
+    environment:
+      PULSE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: pulse_user
+      POSTGRES_PASSWORD: pulse_password
+      POSTGRES_DB: pulse
+      DATABASE_URL: postgresql+asyncpg://pulse_user:pulse_password@postgres:5432/pulse
+      SYNC_DATABASE_URL: postgresql+psycopg2://pulse_user:pulse_password@postgres:5432/pulse
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      WORKER_CONCURRENCY: 8
+      RETRY_BASE_DELAY: 1.0
+      RETRY_MAX_ATTEMPTS: 3
+      REAPER_INTERVAL_SECONDS: 5.0
+      HEARTBEAT_INTERVAL_SECONDS: 3.0
+      HEARTBEAT_TTL_SECONDS: 10.0
+      STALE_JOB_TIMEOUT_SECONDS: 30.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/pulse_worker_healthy || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres_data:
+  redis_data:
